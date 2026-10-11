@@ -19,6 +19,19 @@ A Chrome Extension to easily extract all phone numbers from a WhatsApp Web group
 6. Click **Extract Numbers**.
 7. You can now **Copy** all numbers to your clipboard or download them as a **CSV** file!
 
+## Key Features
+
+- **Automated Virtualization Bypass:** Automatically scrolls the active participant list smoothly to force WhatsApp Web to render all off-screen contacts.
+- **Smart Pop-up & Sidebar Detection:** Seamlessly extracts from both centered modal dialogs (*"View all participants"*) and right-side Group Info drawers.
+- **Intelligent Pop-up Differentiation:** Accurately distinguishes participant modals from unrelated dialogs (*Settings*, *Confirmations*, *Media Viewer*, *Emoji pickers*).
+- **Contact Name Association:** Associates phone numbers with contact names or pushnames while filtering system labels (*Admin*, *online*, etc.).
+- **100% Local & Privacy-Friendly:** Operates entirely within your browser. No data is stored, tracked, or sent to external servers.
+- **Export Options:** One-click copy to clipboard or UTF-8 CSV export (compatible with Excel & Google Sheets).
+
+## Architecture & Technical Documentation
+
+For in-depth technical details on the DOM container heuristics, scoring algorithms, and virtualization handling, refer to [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## Publishing to Chrome Web Store
 
 1. A production zip package is ready at `wa_extractor_v1.0.0.zip`.
@@ -27,4 +40,5 @@ A Chrome Extension to easily extract all phone numbers from a WhatsApp Web group
 4. Click **New Item** and upload `wa_extractor_v1.0.0.zip`.
 5. Fill in the store listing information, upload a screenshot (1280x800 or 640x400), and link your Privacy Policy (`PRIVACY_POLICY.md`).
 6. Click **Submit for Review**.
+
 

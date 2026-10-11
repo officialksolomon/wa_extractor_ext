@@ -187,52 +187,193 @@ async function extractWhatsAppNumbers() {
     }
   };
 
-  const getTargetContainer = () => {
-    const scrollables = [];
-    const elements = document.querySelectorAll('div');
+  const scrapeHeaderPreview = () => {
+    try {
+      const chatHeader = document.querySelector('#main header, header');
+      if (chatHeader) {
+        const spans = chatHeader.querySelectorAll('span[title], span');
+        spans.forEach(el => {
+          const text = el.getAttribute('title') || el.textContent;
+          if (text && text.includes('+')) {
+            const parts = text.split(',');
+            parts.forEach(part => {
+              const p = extractPhone(part.trim());
+              if (p && !contacts.has(p)) {
+                contacts.set(p, 'Unknown');
+              }
+            });
+          }
+        });
+      }
+    } catch (e) {
+      console.warn('Error reading header preview:', e);
+    }
+  };
+
+  // Evaluates a container to verify if it contains group/participant data
+  // Differentiates participant popups from unrelated popups (Settings, Confirmations, Media, Emojis, etc.)
+  const evaluateContainer = (el) => {
+    if (!el) return { score: -1, rowCount: 0, phoneMatches: 0 };
     
-    // Find all scrollable elements
-    for (const el of elements) {
-      if (el.scrollHeight > el.clientHeight) {
-        const style = window.getComputedStyle(el);
-        if (style.overflowY === 'auto' || style.overflowY === 'scroll') {
-          const rect = el.getBoundingClientRect();
+    let score = 0;
+    const textPreview = (el.innerText || el.textContent || '').substring(0, 2000).toLowerCase();
+    
+    // 1. Negative filters: Detect and reject unrelated popups
+    const isMediaViewer = el.querySelector('video, [data-testid="media-viewer"]') !== null;
+    const isEmojiPicker = el.querySelector('[role="tablist"]') !== null && (textPreview.includes('emoji') || textPreview.includes('gif') || textPreview.includes('sticker'));
+    const isConfirmDialog = (
+      (textPreview.includes('delete chat') || textPreview.includes('log out') || textPreview.includes('clear messages') || textPreview.includes('block contact')) 
+      && !textPreview.includes('participant') && !textPreview.includes('member')
+    );
+    const isSettingsDialog = (
+      (textPreview.includes('keyboard shortcuts') || textPreview.includes('chat wallpaper') || textPreview.includes('help & feedback'))
+      && !textPreview.includes('participant') && !textPreview.includes('member')
+    );
+    
+    if (isMediaViewer || isEmojiPicker || isConfirmDialog || isSettingsDialog) {
+      return { score: -100, rowCount: 0, phoneMatches: 0 };
+    }
+    
+    // 2. Count contact rows
+    const rows = el.querySelectorAll('[role="listitem"], [role="row"]');
+    const rowCount = rows.length;
+    
+    // 3. Detect phone numbers in titles or text
+    let phoneMatches = 0;
+    const elementsWithTitle = el.querySelectorAll('[title]');
+    for (const tEl of elementsWithTitle) {
+      if (extractPhone(tEl.getAttribute('title'))) {
+        phoneMatches++;
+        if (phoneMatches >= 5) break;
+      }
+    }
+    if (phoneMatches === 0) {
+      const textEls = el.querySelectorAll('span, div');
+      for (const tEl of textEls) {
+        if (tEl.childNodes.length === 1 && tEl.childNodes[0].nodeType === 3) {
+          if (extractPhone(tEl.textContent.trim())) {
+            phoneMatches++;
+            if (phoneMatches >= 5) break;
+          }
+        }
+      }
+    }
+    
+    // 4. Keyword verification
+    const hasParticipantKeywords = (
+      textPreview.includes('participant') ||
+      textPreview.includes('member') ||
+      textPreview.includes('group info') ||
+      textPreview.includes('community') ||
+      textPreview.includes('contacts')
+    );
+    
+    if (hasParticipantKeywords) score += 60;
+    score += phoneMatches * 30;
+    score += Math.min(rowCount, 30) * 5;
+    
+    return { score, rowCount, phoneMatches };
+  };
+
+  const getTargetContainer = () => {
+    const isScrollable = (el) => {
+      if (el.scrollHeight <= el.clientHeight) return false;
+      const style = window.getComputedStyle(el);
+      return (style.overflowY === 'auto' || style.overflowY === 'scroll');
+    };
+
+    // 1. POPUPS / MODAL DIALOGS (Highest priority ONLY if it actually contains participant data!)
+    const dialogs = document.querySelectorAll(
+      '[role="dialog"], [aria-modal="true"], [data-animate-modal-popup="true"], [data-animate-modal-body="true"]'
+    );
+    
+    let bestDialogCandidate = null;
+    let highestDialogScore = 0;
+
+    for (let i = dialogs.length - 1; i >= 0; i--) {
+      const dialog = dialogs[i];
+      const dialogEval = evaluateContainer(dialog);
+      
+      // If dialog is an unrelated popup (Settings, Media, Confirmation), skip it!
+      if (dialogEval.score <= 0) continue;
+
+      // Look inside the dialog for the best scrollable list
+      const innerScrollables = [];
+      const divs = dialog.querySelectorAll('div');
+      for (const d of divs) {
+        if (isScrollable(d)) {
+          const rect = d.getBoundingClientRect();
           if (rect.width > 50 && rect.height > 50) {
-            scrollables.push(el);
+            const dEval = evaluateContainer(d);
+            innerScrollables.push({ el: d, ...dEval });
+          }
+        }
+      }
+      
+      if (innerScrollables.length > 0) {
+        innerScrollables.sort((a, b) => {
+          if (b.score !== a.score) return b.score - a.score;
+          return b.el.scrollHeight - a.el.scrollHeight;
+        });
+        if (innerScrollables[0].score > highestDialogScore) {
+          highestDialogScore = innerScrollables[0].score;
+          bestDialogCandidate = innerScrollables[0].el;
+        }
+      } else if (dialogEval.score > highestDialogScore) {
+        highestDialogScore = dialogEval.score;
+        bestDialogCandidate = dialog;
+      }
+    }
+
+    if (bestDialogCandidate && highestDialogScore > 0) {
+      return bestDialogCandidate;
+    }
+
+    // 2. SIDEBARS / RIGHT DRAWERS (Group Info sidebar)
+    const rightSideThreshold = window.innerWidth * 0.35;
+    const rightScrollables = [];
+    
+    const elements = document.querySelectorAll('div');
+    for (const el of elements) {
+      if (isScrollable(el)) {
+        const rect = el.getBoundingClientRect();
+        if (rect.left >= rightSideThreshold && rect.width > 50 && rect.height > 100) {
+          const evalRes = evaluateContainer(el);
+          rightScrollables.push({ el, rect, ...evalRes });
+        }
+      }
+    }
+
+    if (rightScrollables.length > 0) {
+      // Sort by participant score first, then rightmost, then scrollHeight
+      rightScrollables.sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        if (b.rect.left !== a.rect.left) return b.rect.left - a.rect.left;
+        return b.el.scrollHeight - a.el.scrollHeight;
+      });
+      return rightScrollables[0].el;
+    }
+
+    // 3. FALLBACK: Any other container holding list rows with positive score (excluding left chat list)
+    const otherCandidates = [];
+    for (const el of elements) {
+      if (isScrollable(el)) {
+        const rect = el.getBoundingClientRect();
+        if (rect.left > 120) {
+          const evalRes = evaluateContainer(el);
+          if (evalRes.score > 0) {
+            otherCandidates.push({ el, ...evalRes });
           }
         }
       }
     }
 
-    if (scrollables.length === 0) return null;
+    if (otherCandidates.length > 0) {
+      otherCandidates.sort((a, b) => b.score - a.score);
+      return otherCandidates[0].el;
+    }
 
-    // 1. Prioritize a popup/dialog if one is open in the center
-    for (const el of scrollables) {
-      let parent = el;
-      while (parent && parent !== document.body) {
-        if (parent.getAttribute('role') === 'dialog' || parent.getAttribute('aria-modal') === 'true') {
-          return el; // Found a scrollable area inside a popup
-        }
-        parent = parent.parentElement;
-      }
-    }
-    
-    // 2. Fallback to the rightmost container (the sidebar)
-    let rightmostContainer = null;
-    let maxLeft = -1;
-    for (const el of scrollables) {
-      const rect = el.getBoundingClientRect();
-      if (rect.left > maxLeft) {
-        maxLeft = rect.left;
-        rightmostContainer = el;
-      } else if (rect.left === maxLeft) {
-        if (rightmostContainer && el.scrollHeight > rightmostContainer.scrollHeight) {
-          rightmostContainer = el;
-        }
-      }
-    }
-    
-    return rightmostContainer;
+    return null;
   };
 
   const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -243,31 +384,39 @@ async function extractWhatsAppNumbers() {
     // Scrape what is currently visible first
     scrapeContainer(targetContainer);
     
-    // Scroll to the top first
-    targetContainer.scrollTop = 0;
-    await sleep(300); 
-    
-    let previousScrollTop = -1;
-    let attempts = 0;
-    
-    // Keep scrolling down until we reach the bottom
-    while (targetContainer.scrollTop !== previousScrollTop && attempts < 200) { 
-      previousScrollTop = targetContainer.scrollTop;
+    // Only scroll if container is actually scrollable
+    if (targetContainer.scrollHeight > targetContainer.clientHeight) {
+      // Scroll to the top first
+      targetContainer.scrollTop = 0;
+      await sleep(300); 
       
-      scrapeContainer(targetContainer);
+      let previousScrollTop = -1;
+      let attempts = 0;
       
-      // Scroll by about half the container height
-      targetContainer.scrollTop += (targetContainer.clientHeight / 1.5); 
-      
-      // Wait for WhatsApp to render virtualized list items
-      await sleep(300);
-      
-      attempts++;
+      // Keep scrolling down until bottom reached
+      while (targetContainer.scrollTop !== previousScrollTop && attempts < 200) { 
+        previousScrollTop = targetContainer.scrollTop;
+        
+        scrapeContainer(targetContainer);
+        
+        targetContainer.scrollTop += (targetContainer.clientHeight / 1.5); 
+        await sleep(300);
+        
+        attempts++;
+      }
     }
   } else {
-    // Fallback if no sidebar is found
-    scrapeContainer(document.body);
+    // Fallback if no sidebar or popup is found
+    const openDialog = document.querySelector('[role="dialog"], [aria-modal="true"]');
+    if (openDialog) {
+      scrapeContainer(openDialog);
+    } else {
+      scrapeContainer(document.body);
+    }
   }
+
+  // Also harvest any numbers visible in the group chat header subtitle
+  scrapeHeaderPreview();
 
   // Convert Map back to array of objects
   return Array.from(contacts.entries())
